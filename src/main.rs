@@ -1,4 +1,4 @@
-use axum::Router;
+use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -18,11 +18,20 @@ type BookStore = Arc<RwLock<Vec<Book>>>;
 async fn main() {
     let store: BookStore = Arc::new(RwLock::new(Vec::new()));
 
-    let app = Router::new();
+    let app = Router::new()
+        .route("/books", get(list_books))
+        .with_state(store);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .unwrap();
 
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn list_books(
+    State(store): State<BookStore>
+) -> Json<Vec<Book>> {
+    let books = store.read().unwrap();
+    Json(books.clone())
 }
