@@ -19,6 +19,7 @@ async fn main() {
     let store: BookStore = Arc::new(RwLock::new(Vec::new()));
 
     let app = Router::new()
+        .route("/health", get(health_check))
         .route("/books", get(list_books))
         .with_state(store);
 
@@ -27,6 +28,10 @@ async fn main() {
         .unwrap();
 
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn health_check() -> &'static str {
+    "OK"
 }
 
 async fn list_books(
