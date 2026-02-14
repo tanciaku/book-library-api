@@ -20,6 +20,15 @@ struct AddBook {
     isbn: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateBook {
+    title: Option<String>,
+    author: Option<String>,
+    year: Option<u32>,
+    isbn: Option<String>,
+    available: Option<bool>,
+}
+
 type BookStore = Arc<RwLock<Vec<Book>>>;
 
 #[tokio::main]
@@ -29,7 +38,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/books", get(list_books).post(add_book))
-        .route("/books/{id}", get(get_book))
+        .route("/books/{id}", get(get_book).put(update_book))
         .with_state(store);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -84,6 +93,29 @@ async fn get_book(
 
     match book {
         Some(book) => Ok(Json(book)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn update_book(
+    State(store): State<BookStore>,
+    Path(id): Path<u32>,
+    Json(input): Json<UpdateBook>
+) -> Result<Json<Book>, StatusCode> {
+    let mut books = store.write().unwrap();
+
+    let book = books.iter_mut()
+        .find(|b| b.id == id);
+
+    match book {
+        Some(book) => {
+            input.title.map(|b| book.title = b);
+            input.author.map(|b| book.author = b);
+            input.year.map(|b| book.year = b);
+            input.isbn.map(|b| book.isbn = b);
+            input.available.map(|b| book.available = b);
+            Ok(Json(book.clone()))
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
 }
