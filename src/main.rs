@@ -1,4 +1,4 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::{Path, State}, http::StatusCode, routing::get};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -29,6 +29,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/books", get(list_books).post(add_book))
+        .route("/books/{id}", get(get_book))
         .with_state(store);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -69,4 +70,20 @@ async fn add_book(
     books.push(book.clone());
 
     (StatusCode::CREATED, Json(book))
+}
+
+async fn get_book(
+    State(store): State<BookStore>,
+    Path(id): Path<u32>
+) -> Result<Json<Book>, StatusCode> {
+    let books = store.read().unwrap();
+
+    let book = books.iter()
+        .find(|t| t.id == id)
+        .cloned();
+
+    match book {
+        Some(book) => Ok(Json(book)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
 }
