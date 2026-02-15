@@ -1,4 +1,4 @@
-use axum::{Json, Router, extract::{Path, State}, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::get};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -27,6 +27,13 @@ struct UpdateBook {
     year: Option<u32>,
     isbn: Option<String>,
     available: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookParams {
+    available: Option<bool>,
+    author: Option<String>,
+    year: Option<u32>
 }
 
 type BookStore = Arc<RwLock<Vec<Book>>>;
@@ -61,10 +68,39 @@ async fn health_check() -> &'static str {
 }
 
 async fn list_books(
-    State(store): State<BookStore>
+    State(store): State<BookStore>,
+    Query(params): Query<BookParams>
 ) -> Json<Vec<Book>> {
     let books = store.read().unwrap();
-    Json(books.clone())
+
+    let filtered: Vec<Book> = books
+        .iter()
+        .filter(|book| matches_filters(book, &params))
+        .cloned()
+        .collect();
+
+    Json(filtered)
+}
+
+fn matches_filters(book: &Book, params: &BookParams) -> bool {
+    let availability_matches = params
+        .available
+        .map_or(true, |availability| book.available == availability);
+
+    let author_matches = params
+        .author
+        .as_ref()
+        .map_or(true, |search| author_matches_search(book.author.as_str(), search.as_str()));
+
+    let year_matches = params
+        .year
+        .map_or(true, |year| book.year == year);
+
+    availability_matches && author_matches && year_matches
+}
+
+fn author_matches_search(author: &str, search_term: &str) -> bool {
+    author.to_lowercase().contains(&search_term.to_lowercase())
 }
 
 async fn add_book(

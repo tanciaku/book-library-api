@@ -21,7 +21,7 @@ The server will start on `http://localhost:3000`
 ### Books
 
 - `GET /health` - Health check
-- `GET /books` - List all books
+- `GET /books` - List all books (with optional filters)
 - `POST /books` - Add a new book
 - `GET /books/{id}` - Get a book by ID
 - `PUT /books/{id}` - Update a book
@@ -44,6 +44,21 @@ curl -X POST http://localhost:3000/books \
 **List all books:**
 ```bash
 curl http://localhost:3000/books
+```
+
+**Filter books:**
+```bash
+# Filter by availability
+curl http://localhost:3000/books?available=true
+
+# Filter by author (case-insensitive search)
+curl http://localhost:3000/books?author=martin
+
+# Filter by publication year
+curl http://localhost:3000/books?year=2008
+
+# Combine multiple filters
+curl "http://localhost:3000/books?available=true&author=martin&year=2008"
 ```
 
 **Update book availability:**
