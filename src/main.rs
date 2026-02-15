@@ -38,7 +38,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/books", get(list_books).post(add_book))
-        .route("/books/{id}", get(get_book).put(update_book))
+        .route("/books/{id}", get(get_book).put(update_book).delete(delete_book))
         .with_state(store);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -117,5 +117,21 @@ async fn update_book(
             Ok(Json(book.clone()))
         }
         None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn delete_book(
+    State(store): State<BookStore>,
+    Path(id): Path<u32>,
+) -> StatusCode {
+    let mut books = store.write().unwrap();
+
+    let original_len = books.len();
+    books.retain(|b| b.id != id);
+
+    if books.len() < original_len {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
     }
 }
