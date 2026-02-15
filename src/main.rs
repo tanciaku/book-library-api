@@ -160,7 +160,7 @@ fn is_valid_isbn(isbn: &str) -> bool {
 async fn get_book(
     State(store): State<BookStore>,
     Path(id): Path<u32>
-) -> Result<Json<Book>, StatusCode> {
+) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
     let books = store.read().unwrap();
 
     let book = books.iter()
@@ -168,8 +168,11 @@ async fn get_book(
         .cloned();
 
     match book {
-        Some(book) => Ok(Json(book)),
-        None => Err(StatusCode::NOT_FOUND),
+        Some(book) => Ok((StatusCode::OK, Json(book))),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: format!("Book with ID {} not found", id) }
+        ))),
     }
 }
 
@@ -177,7 +180,7 @@ async fn update_book(
     State(store): State<BookStore>,
     Path(id): Path<u32>,
     Json(input): Json<UpdateBook>
-) -> Result<Json<Book>, StatusCode> {
+) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
     let mut books = store.write().unwrap();
 
     let book = books.iter_mut()
@@ -190,24 +193,30 @@ async fn update_book(
             input.year.map(|b| book.year = b);
             input.isbn.map(|b| book.isbn = b);
             input.available.map(|b| book.available = b);
-            Ok(Json(book.clone()))
+            Ok((StatusCode::OK, Json(book.clone())))
         }
-        None => Err(StatusCode::NOT_FOUND),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: format!("Book with ID {} not found", id) }
+        ))),
     }
 }
 
 async fn delete_book(
     State(store): State<BookStore>,
     Path(id): Path<u32>,
-) -> StatusCode {
+) -> Result<(StatusCode, ()), (StatusCode, Json<ErrorResponse>)> {
     let mut books = store.write().unwrap();
 
     let original_len = books.len();
     books.retain(|b| b.id != id);
 
     if books.len() < original_len {
-        StatusCode::NO_CONTENT
+        Ok((StatusCode::NO_CONTENT, ()))
     } else {
-        StatusCode::NOT_FOUND
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: format!("Book with ID {} not found", id) }
+        )))
     }
 }
