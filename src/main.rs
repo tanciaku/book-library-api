@@ -1,5 +1,6 @@
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::get};
 use serde::{Deserialize, Serialize};
+use chrono::Datelike;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +35,11 @@ struct BookParams {
     available: Option<bool>,
     author: Option<String>,
     year: Option<u32>
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
 }
 
 type BookStore = Arc<RwLock<Vec<Book>>>;
@@ -106,10 +112,19 @@ fn author_matches_search(author: &str, search_term: &str) -> bool {
 async fn add_book(
     State(store): State<BookStore>,
     Json(input): Json<AddBook>
-) -> (StatusCode, Json<Book>) {
+) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
     let mut books = store.write().unwrap();
 
     let new_id = books.len() as u32 + 1;
+
+    if !validate_book(&input) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid book data. Check title, author, year, and ISBN format.".to_string()
+            })
+        ));
+    }
 
     let book = Book {
         id: new_id,
@@ -122,7 +137,24 @@ async fn add_book(
 
     books.push(book.clone());
 
-    (StatusCode::CREATED, Json(book))
+    Ok((StatusCode::CREATED, Json(book)))
+}
+
+fn validate_book(book: &AddBook) -> bool {
+    !book.title.is_empty() &&
+    !book.author.is_empty() &&
+    is_valid_year(book.year) &&
+    is_valid_isbn(&book.isbn)
+}
+
+fn is_valid_year(year: u32) -> bool {
+    let current_year = chrono::Utc::now().year(); 
+    (1000..=current_year).contains(&(year as i32))
+}
+
+fn is_valid_isbn(isbn: &str) -> bool {
+    let cleaned = isbn.replace("-", "");
+    cleaned.len() == 13 && cleaned.chars().all(|c| c.is_numeric())
 }
 
 async fn get_book(

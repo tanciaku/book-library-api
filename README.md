@@ -86,6 +86,17 @@ curl -X DELETE http://localhost:3000/books/1
 }
 ```
 
+## Validation
+
+When adding a new book, the following validations are enforced:
+
+- **Title**: Must not be empty
+- **Author**: Must not be empty
+- **Year**: Must be between 1000 and the current year
+- **ISBN**: Must be a valid ISBN-13 format (13 digits, hyphens allowed)
+
+Invalid requests will return `400 Bad Request` with an error message.
+
 ## Notes
 
 ⚠️ Uses in-memory storage - data is lost when the server stops.
