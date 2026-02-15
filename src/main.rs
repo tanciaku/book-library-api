@@ -45,6 +45,14 @@ async fn main() {
         .await
         .unwrap();
 
+    println!("\n Server running on http://localhost:3000");
+    println!("\n Available endpoints:");
+    println!("  GET    /books       - List all books");
+    println!("  POST   /books       - Add a book");
+    println!("  GET    /books/:id   - Get a book");
+    println!("  PUT    /books/:id   - Update a book");
+    println!("  DELETE /books/:id   - Delete a book");
+
     axum::serve(listener, app).await.unwrap();
 }
 
