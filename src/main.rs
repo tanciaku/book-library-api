@@ -34,12 +34,28 @@ struct UpdateBook {
 struct BookParams {
     available: Option<bool>,
     author: Option<String>,
-    year: Option<u32>
+    year: Option<u32>,
+    page: Option<usize>,
+    limit: Option<usize>,
 }
 
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PaginatedResponse<T> {
+    data: Vec<T>,
+    pagination: PaginationMeta,
+}
+
+#[derive(Debug, Serialize)]
+struct PaginationMeta {
+    page: usize,
+    limit: usize,
+    total_items: usize,
+    total_pages: usize,
 }
 
 type BookStore = Arc<RwLock<Vec<Book>>>;
@@ -76,7 +92,7 @@ async fn health_check() -> &'static str {
 async fn list_books(
     State(store): State<BookStore>,
     Query(params): Query<BookParams>
-) -> Json<Vec<Book>> {
+) -> Json<PaginatedResponse<Book>> {
     let books = store.read().unwrap();
 
     let filtered: Vec<Book> = books
@@ -85,7 +101,30 @@ async fn list_books(
         .cloned()
         .collect();
 
-    Json(filtered)
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(10).min(100);
+
+    let total_items = filtered.len();
+    let total_pages = (total_items + limit - 1) / limit;
+
+    let start = (page - 1) * limit;
+    let end = (start + limit).min(total_items);
+
+    let paginated_data = if start < total_items {
+        filtered[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Json(PaginatedResponse {
+        data: paginated_data,
+        pagination: PaginationMeta {
+            page,
+            limit,
+            total_items,
+            total_pages,
+        },
+    })
 }
 
 fn matches_filters(book: &Book, params: &BookParams) -> bool {

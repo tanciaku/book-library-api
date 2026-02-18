@@ -21,7 +21,7 @@ The server will start on `http://localhost:3000`
 ### Books
 
 - `GET /health` - Health check
-- `GET /books` - List all books (with optional filters)
+- `GET /books` - List all books (with optional filters and pagination)
 - `POST /books` - Add a new book
 - `GET /books/{id}` - Get a book by ID
 - `PUT /books/{id}` - Update a book
@@ -60,6 +60,30 @@ curl http://localhost:3000/books?year=2008
 # Combine multiple filters
 curl "http://localhost:3000/books?available=true&author=martin&year=2008"
 ```
+
+**Paginate books:**
+```bash
+# Get the second page with 5 books per page
+curl "http://localhost:3000/books?page=2&limit=5"
+
+# Combine pagination with filters
+curl "http://localhost:3000/books?available=true&page=1&limit=20"
+```
+
+The response includes a `pagination` metadata object alongside the `data` array:
+```json
+{
+  "data": [...],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "total_items": 42,
+    "total_pages": 5
+  }
+}
+```
+
+> `page` defaults to `1` and `limit` defaults to `10` (max `100`).
 
 **Update book availability:**
 ```bash
