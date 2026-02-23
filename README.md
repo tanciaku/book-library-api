@@ -121,6 +121,17 @@ When adding a new book, the following validations are enforced:
 
 Invalid requests will return `400 Bad Request` with an error message.
 
+## Testing
+
+The project includes a comprehensive test suite covering all endpoints with both unit and integration tests.
+
+Test coverage includes:
+- All CRUD operations and their expected status codes
+- Input validation (empty fields, invalid ISBN, future year)
+- Filtering by author (case-insensitive), year, and availability
+- Pagination correctness, limit capping, and out-of-bounds pages
+- End-to-end integration flows (create → update → get, create → delete → 404, etc.)
+
 ## Notes
 
 ⚠️ Uses in-memory storage - data is lost when the server stops.
