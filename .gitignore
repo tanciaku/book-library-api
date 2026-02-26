@@ -2,3 +2,7 @@
 /coverage
 /book-library-api.txt
 /cmds.txt
+/books.db
+/books.db-shm
+/books.db-wal
+/.env

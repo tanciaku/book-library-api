@@ -5,10 +5,24 @@ A simple REST API for managing a personal book library, built with Rust and Axum
 ## Features
 
 - CRUD operations for books
-- In-memory storage
+- SQLite persistence via sqlx
 - Track book availability
 
 ## Quick Start
+
+1. Create a `.env` file (or export the variable) with your database URL:
+
+```bash
+echo "DATABASE_URL=sqlite:books.db" > .env
+```
+
+2. Run database migrations:
+
+```bash
+cargo sqlx migrate run
+```
+
+3. Start the server:
 
 ```bash
 cargo run
@@ -134,7 +148,8 @@ Test coverage includes:
 
 ## Notes
 
-⚠️ Uses in-memory storage - data is lost when the server stops.
+- Data is persisted in `books.db` (SQLite). The file is created automatically on first run.
+- Tests use an isolated in-memory SQLite database and run migrations automatically.
 
 ## License
 
