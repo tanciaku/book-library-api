@@ -5,10 +5,10 @@ use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Book {
-    id: u32,
+    id: i64,
     title: String,
     author: String,
-    year: u32,
+    year: i64,
     isbn: String,
     available: bool,
 }
@@ -17,7 +17,7 @@ struct Book {
 struct AddBook {
     title: String,
     author: String,
-    year: u32,
+    year: i64,
     isbn: String,
 }
 
@@ -25,7 +25,7 @@ struct AddBook {
 struct UpdateBook {
     title: Option<String>,
     author: Option<String>,
-    year: Option<u32>,
+    year: Option<i64>,
     isbn: Option<String>,
     available: Option<bool>,
 }
@@ -34,7 +34,7 @@ struct UpdateBook {
 struct BookParams {
     available: Option<bool>,
     author: Option<String>,
-    year: Option<u32>,
+    year: Option<i64>,
     page: Option<usize>,
     limit: Option<usize>,
 }
@@ -135,10 +135,10 @@ async fn list_books(
     .unwrap();
 
     let paginated_data: Vec<Book> = rows.into_iter().map(|r| Book {
-        id: r.id as u32,
+        id: r.id,
         title: r.title,
         author: r.author,
-        year: r.year as u32,
+        year: r.year,
         isbn: r.isbn,
         available: r.available != 0,
     }).collect();
@@ -180,7 +180,7 @@ async fn add_book(
     .unwrap();
 
     let book = Book {
-        id: result.last_insert_rowid() as u32,
+        id: result.last_insert_rowid(),
         title: input.title,
         author: input.author,
         year: input.year,
@@ -198,9 +198,9 @@ fn validate_book(book: &AddBook) -> bool {
     is_valid_isbn(&book.isbn)
 }
 
-fn is_valid_year(year: u32) -> bool {
-    let current_year = chrono::Utc::now().year(); 
-    (1000..=current_year).contains(&(year as i32))
+fn is_valid_year(year: i64) -> bool {
+    let current_year = chrono::Utc::now().year() as i64;
+    (1000..=current_year).contains(&year)
 }
 
 fn is_valid_isbn(isbn: &str) -> bool {
@@ -210,7 +210,7 @@ fn is_valid_isbn(isbn: &str) -> bool {
 
 async fn get_book(
     State(pool): State<SqlitePool>,
-    Path(id): Path<u32>
+    Path(id): Path<i64>
 ) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
     let row = sqlx::query!(
         "SELECT id, title, author, year, isbn, available FROM books WHERE id = ?",
@@ -224,10 +224,10 @@ async fn get_book(
         Some(r) => Ok((
             StatusCode::OK,
             Json(Book {
-                id: r.id as u32,
+                id: r.id,
                 title: r.title,
                 author: r.author,
-                year: r.year as u32,
+                year: r.year,
                 isbn: r.isbn,
                 available: r.available != 0,
             }))),
@@ -240,7 +240,7 @@ async fn get_book(
 
 async fn update_book(
     State(pool): State<SqlitePool>,
-    Path(id): Path<u32>,
+    Path(id): Path<i64>,
     Json(input): Json<UpdateBook>
 ) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
     let result = sqlx::query!(
@@ -280,10 +280,10 @@ async fn update_book(
     Ok((
         StatusCode::OK,
         Json(Book {
-            id: row.id as u32,
+            id: row.id,
             title: row.title,
             author: row.author,
-            year: row.year as u32,
+            year: row.year,
             isbn: row.isbn,
             available: row.available != 0,
         })
@@ -292,7 +292,7 @@ async fn update_book(
 
 async fn delete_book(
     State(pool): State<SqlitePool>,
-    Path(id): Path<u32>,
+    Path(id): Path<i64>,
 ) -> Result<(StatusCode, ()), (StatusCode, Json<ErrorResponse>)> {
     let result = sqlx::query!(
         "DELETE FROM books WHERE id = ?",
@@ -348,14 +348,12 @@ mod tests {
     async fn app_with_books(books: Vec<Book>) -> Router {
         let pool = test_pool().await;
         for book in &books {
-            let id_i64 = book.id as i64;
-            let year_i64 = book.year as i64;
             sqlx::query!(
                 "INSERT INTO books (id, title, author, year, isbn, available) VALUES (?, ?, ?, ?, ?, ?)",
-                id_i64,
+                book.id,
                 book.title,
                 book.author,
-                year_i64,
+                book.year,
                 book.isbn,
                 book.available,
             )
@@ -373,7 +371,7 @@ mod tests {
         (status, body)
     }
 
-    fn sample_book(id: u32) -> Book {
+    fn sample_book(id: i64) -> Book {
         Book {
             id,
             title: format!("Book {}", id),
@@ -478,12 +476,12 @@ mod tests {
         assert_eq!(resp.pagination.limit, 5);
         assert_eq!(resp.pagination.total_items, 15);
         assert_eq!(resp.pagination.total_pages, 3);
-        assert_eq!(resp.data[0].id, 6);
+        assert_eq!(resp.data[0].id, 6_i64);
     }
 
     #[tokio::test]
     async fn list_books_page_beyond_total_returns_empty() {
-        let books: Vec<Book> = (1..=3).map(sample_book).collect();
+        let books: Vec<Book> = (1_i64..=3).map(sample_book).collect();
         let app = app_with_books(books).await;
         let req = Request::builder().uri("/books?page=99&limit=10").body(Body::empty()).unwrap();
         let (status, body) = send(app, req).await;
@@ -494,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_books_limit_capped_at_100() {
-        let books: Vec<Book> = (1..=110).map(sample_book).collect();
+        let books: Vec<Book> = (1_i64..=110).map(sample_book).collect();
         let app = app_with_books(books).await;
         let req = Request::builder().uri("/books?limit=200").body(Body::empty()).unwrap();
         let (status, body) = send(app, req).await;
@@ -886,7 +884,7 @@ mod tests {
         let pool = test_pool().await;
 
         // Create 12 books via the API
-        for i in 1..=12u32 {
+        for i in 1..=12i64 {
             let payload = format!(
                 r#"{{"title":"Paginated Book {}","author":"Paged Author","year":2020,"isbn":"9780340960196"}}"#,
                 i
@@ -950,8 +948,8 @@ mod tests {
         assert_eq!(page4.pagination.total_pages, 3);
 
         // Confirm no overlap between pages 1 and 2
-        let ids_page1: Vec<u32> = page1.data.iter().map(|b| b.id).collect();
-        let ids_page2: Vec<u32> = page2.data.iter().map(|b| b.id).collect();
+        let ids_page1: Vec<i64> = page1.data.iter().map(|b| b.id).collect();
+        let ids_page2: Vec<i64> = page2.data.iter().map(|b| b.id).collect();
         assert!(ids_page1.iter().all(|id| !ids_page2.contains(id)));
     }
 
@@ -959,8 +957,8 @@ mod tests {
     async fn integration_delete_one_of_many_leaves_rest_intact() {
         let pool = test_pool().await;
 
-        let mut ids = Vec::new();
-        for i in 0..3u32 {
+        let mut ids: Vec<i64> = Vec::new();
+        for i in 0..3i64 {
             let payload = format!(
                 r#"{{"title":"Book {}","author":"Author","year":2020,"isbn":"9780340960196"}}"#, i
             );
@@ -986,7 +984,7 @@ mod tests {
         let resp: PaginatedResponse<Book> = serde_json::from_slice(&list_body).unwrap();
         assert_eq!(resp.pagination.total_items, 2);
 
-        let remaining_ids: Vec<u32> = resp.data.iter().map(|b| b.id).collect();
+        let remaining_ids: Vec<i64> = resp.data.iter().map(|b| b.id).collect();
         assert!(remaining_ids.contains(&ids[0]));
         assert!(remaining_ids.contains(&ids[2]));
         assert!(!remaining_ids.contains(&ids[1]));
