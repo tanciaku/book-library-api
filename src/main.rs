@@ -60,7 +60,10 @@ struct PaginationMeta {
 
 #[tokio::main]
 async fn main() {
-    let pool = SqlitePool::connect("sqlite:books.db")
+    dotenvy::dotenv().ok();
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let pool = SqlitePool::connect(&db_url)
         .await
         .unwrap();
 
