@@ -295,8 +295,8 @@ async fn get_book_not_found_returns_404() {
     let req = Request::builder().uri("/books/99").body(Body::empty()).unwrap();
     let (status, body) = send(app, req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
-    assert!(err.error.contains("99"));
+    let body_str = String::from_utf8(body).unwrap();
+    assert!(body_str.contains("99"));
 }
 
 // --- update_book ---
@@ -371,8 +371,8 @@ async fn delete_book_not_found_returns_404() {
         .unwrap();
     let (status, body) = send(app, req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
-    assert!(err.error.contains("99"));
+    let body_str = String::from_utf8(body).unwrap();
+    assert!(body_str.contains("99"));
 }
 
 // --- integration ---

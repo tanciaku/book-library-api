@@ -1,4 +1,4 @@
-use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, routing::get};
 use serde::{Deserialize, Serialize};
 use chrono::Datelike;
 use sqlx::SqlitePool;
@@ -39,11 +39,6 @@ struct BookParams {
     limit: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ErrorResponse {
-    error: String,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct PaginatedResponse<T> {
     data: Vec<T>,
@@ -56,6 +51,40 @@ struct PaginationMeta {
     limit: usize,
     total_items: usize,
     total_pages: usize,
+}
+
+enum AppError {
+    Database(sqlx::Error),
+    NotFound(i64),
+    BadRequest,
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            AppError::Database(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e)
+            )
+                .into_response(),
+            AppError::NotFound(id) => (
+                StatusCode::NOT_FOUND,
+                format!("Book with ID {} not found", id)
+            )
+                .into_response(),
+            AppError::BadRequest => (
+                StatusCode::BAD_REQUEST,
+                "Invalid book data. Check title, author, year, and ISBN format.".to_string()
+            )
+                .into_response(),
+        }
+    }
+}
+
+impl From<sqlx::Error> for AppError {
+    fn from(e: sqlx::Error) -> Self {
+        AppError::Database(e)
+    }
 }
 
 #[tokio::main]
@@ -89,7 +118,7 @@ async fn health_check() -> &'static str {
 async fn list_books(
     State(pool): State<SqlitePool>,
     Query(params): Query<BookParams>
-) -> Json<PaginatedResponse<Book>> {
+) -> Result<Json<PaginatedResponse<Book>>, AppError> {
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(10).min(100);
     let offset = (page - 1) * limit;
@@ -108,8 +137,7 @@ async fn list_books(
         params.year,
     )
     .fetch_one(&pool)
-    .await
-    .unwrap()
+    .await?
     .count
     as usize;
 
@@ -134,8 +162,7 @@ async fn list_books(
         offset_i64,
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     let paginated_data: Vec<Book> = rows.into_iter().map(|r| Book {
         id: r.id,
@@ -146,7 +173,7 @@ async fn list_books(
         available: r.available != 0,
     }).collect();
 
-    Json(PaginatedResponse {
+    Ok(Json(PaginatedResponse {
         data: paginated_data,
         pagination: PaginationMeta {
             page,
@@ -154,20 +181,15 @@ async fn list_books(
             total_items,
             total_pages,
         },
-    })
+    }))
 }
 
 async fn add_book(
     State(pool): State<SqlitePool>,
     Json(input): Json<AddBook>
-) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<Book>), AppError> {
     if !validate_book(&input) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid book data. Check title, author, year, and ISBN format.".to_string()
-            })
-        ));
+        return Err(AppError::BadRequest)
     }
     
     let result = sqlx::query!(
@@ -179,8 +201,7 @@ async fn add_book(
         true,
     )
     .execute(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     let book = Book {
         id: result.last_insert_rowid(),
@@ -214,14 +235,13 @@ fn is_valid_isbn(isbn: &str) -> bool {
 async fn get_book(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>
-) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<Book>), AppError> {
     let row = sqlx::query!(
         "SELECT id, title, author, year, isbn, available FROM books WHERE id = ?",
         id
     )
     .fetch_optional(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     match row {
         Some(r) => Ok((
@@ -234,10 +254,7 @@ async fn get_book(
                 isbn: r.isbn,
                 available: r.available != 0,
             }))),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: format!("Book with ID {} not found", id) }
-        ))),
+        None => Err(AppError::NotFound(id)),
     }
 }
 
@@ -245,7 +262,7 @@ async fn update_book(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>,
     Json(input): Json<UpdateBook>
-) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<Book>), AppError> {
     let result = sqlx::query!(
         "UPDATE books
          SET title     = COALESCE(?, title),
@@ -262,14 +279,10 @@ async fn update_book(
         id
     )
     .execute(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     if result.rows_affected() == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: format!("Book with ID {} not found", id) }
-        )))
+        return Err(AppError::NotFound(id))
     }
 
     let row = sqlx::query!(
@@ -277,8 +290,7 @@ async fn update_book(
         id
     )
     .fetch_one(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -296,22 +308,18 @@ async fn update_book(
 async fn delete_book(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>,
-) -> Result<(StatusCode, ()), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, AppError> {
     let result = sqlx::query!(
         "DELETE FROM books WHERE id = ?",
         id
     )
     .execute(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     if result.rows_affected() == 0 {
-        Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: format!("Book with ID {} not found", id) }
-        )))
+        Err(AppError::NotFound(id))
     } else {
-        Ok((StatusCode::NO_CONTENT, ()))
+        Ok(StatusCode::NO_CONTENT)
     }
 }
 
