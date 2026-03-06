@@ -2,14 +2,19 @@ use super::*;
 
 use axum::body::Body;
 use http_body_util::BodyExt;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::str::FromStr;
 use tower::ServiceExt;
 use axum::http::{self, Request};
 
 async fn test_pool() -> SqlitePool {
+    let connect_options = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .foreign_keys(true);
+
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect("sqlite::memory:")
+        .connect_with(connect_options)
         .await
         .unwrap();
 
@@ -26,6 +31,9 @@ fn make_app(pool: SqlitePool) -> Router {
         .route("/health", get(health_check))
         .route("/books", get(list_books).post(add_book))
         .route("/books/{id}", get(get_book).put(update_book).delete(delete_book))
+        .route("/books/{id}/borrow", post(borrow_book))
+        .route("/books/{id}/return", post(return_book))
+        .route("/borrowings/overdue", get(list_overdue))
         .with_state(pool)
 }
 
@@ -46,6 +54,49 @@ async fn app_with_books(books: Vec<Book>) -> Router {
         .unwrap();
     }
     make_app(pool)
+}
+
+/// Seeds one book and one borrowing row, returns the pool so the caller can
+/// build the app and add further rows if needed.
+async fn pool_with_borrowing(book: Book, borrowing: Borrowing) -> SqlitePool {
+    let pool = test_pool().await;
+    sqlx::query!(
+        "INSERT INTO books (id, title, author, year, isbn, available) VALUES (?, ?, ?, ?, ?, ?)",
+        book.id,
+        book.title,
+        book.author,
+        book.year,
+        book.isbn,
+        book.available,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO borrowings (id, book_id, borrower_name, borrowed_at, due_date, returned_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        borrowing.id,
+        borrowing.book_id,
+        borrowing.borrower_name,
+        borrowing.borrowed_at,
+        borrowing.due_date,
+        borrowing.returned_at,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+fn sample_borrowing(id: i64, book_id: i64) -> Borrowing {
+    Borrowing {
+        id,
+        book_id,
+        borrower_name: "Alice".to_string(),
+        borrowed_at: "2024-01-01T00:00:00+00:00".to_string(),
+        due_date: "2024-01-15T00:00:00+00:00".to_string(), // overdue, unless returned_at manually set
+        returned_at: None,
+    }
 }
 
 async fn send(app: Router, req: Request<Body>) -> (http::StatusCode, Vec<u8>) {
@@ -672,4 +723,180 @@ async fn integration_delete_one_of_many_leaves_rest_intact() {
     assert!(remaining_ids.contains(&ids[0]));
     assert!(remaining_ids.contains(&ids[2]));
     assert!(!remaining_ids.contains(&ids[1]));
+}
+
+// --- borrow_book ---
+
+#[tokio::test]
+async fn borrow_book_returns_201_with_borrowing() {
+    let app = app_with_books(vec![sample_book(1)]).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/books/1/borrow")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"borrower_name":"Alice","days":7}"#))
+        .unwrap();
+    let (status, body) = send(app, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let b: Borrowing = serde_json::from_slice(&body).unwrap();
+    assert_eq!(b.book_id, 1);
+    assert_eq!(b.borrower_name, "Alice");
+    assert!(b.returned_at.is_none());
+}
+
+#[tokio::test]
+async fn borrow_book_not_found_returns_404() {
+    let app = make_app(test_pool().await);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/books/99/borrow")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"borrower_name":"Bob"}"#))
+        .unwrap();
+    let (status, _) = send(app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn borrow_book_already_borrowed_returns_409() {
+    let mut book = sample_book(1);
+    book.available = false;
+    let app = app_with_books(vec![book]).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/books/1/borrow")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"borrower_name":"Bob"}"#))
+        .unwrap();
+    let (status, _) = send(app, req).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+// --- return_book ---
+
+#[tokio::test]
+async fn return_book_returns_200() {
+    let mut book = sample_book(1);
+    book.available = false;
+    let pool = pool_with_borrowing(book, sample_borrowing(1, 1)).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/books/1/return")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(make_app(pool), req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn return_book_not_borrowed_returns_400() {
+    let app = app_with_books(vec![sample_book(1)]).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/books/1/return")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(app, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// --- list_overdue ---
+
+#[tokio::test]
+async fn list_overdue_returns_overdue_borrowings() {
+    let mut book = sample_book(1);
+    book.available = false;
+    let pool = pool_with_borrowing(book, sample_borrowing(1, 1)).await;
+    let req = Request::builder()
+        .uri("/borrowings/overdue")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(make_app(pool), req).await;
+    assert_eq!(status, StatusCode::OK);
+    let overdue: Vec<OverdueBorrowing> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(overdue.len(), 1);
+    assert_eq!(overdue[0].book_id, 1);
+    assert_eq!(overdue[0].borrower_name, "Alice");
+}
+
+#[tokio::test]
+async fn list_overdue_excludes_returned_borrowings() {
+    let mut book = sample_book(1);
+    book.available = false;
+    let mut borrowing = sample_borrowing(1, 1);
+    borrowing.returned_at = Some("2024-01-10T00:00:00+00:00".to_string());
+    let pool = pool_with_borrowing(book, borrowing).await;
+    let req = Request::builder()
+        .uri("/borrowings/overdue")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(make_app(pool), req).await;
+    assert_eq!(status, StatusCode::OK);
+    let overdue: Vec<OverdueBorrowing> = serde_json::from_slice(&body).unwrap();
+    assert!(overdue.is_empty());
+}
+
+#[tokio::test]
+async fn list_overdue_excludes_future_due_dates() {
+    let mut book = sample_book(1);
+    book.available = false;
+    let mut borrowing = sample_borrowing(1, 1);
+    borrowing.due_date = "2099-01-01T00:00:00+00:00".to_string();
+    let pool = pool_with_borrowing(book, borrowing).await;
+    let req = Request::builder()
+        .uri("/borrowings/overdue")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(make_app(pool), req).await;
+    assert_eq!(status, StatusCode::OK);
+    let overdue: Vec<OverdueBorrowing> = serde_json::from_slice(&body).unwrap();
+    assert!(overdue.is_empty());
+}
+
+// --- integration (borrow/return) ---
+
+#[tokio::test]
+async fn integration_borrow_then_return_makes_book_available() {
+    let pool = test_pool().await;
+
+    // Create book
+    let post_req = Request::builder()
+        .method("POST").uri("/books")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"title":"Borrowable","author":"Lib","year":2020,"isbn":"9780340960196"}"#))
+        .unwrap();
+    let (_, post_body) = send(make_app(pool.clone()), post_req).await;
+    let book: Book = serde_json::from_slice(&post_body).unwrap();
+
+    // Borrow it
+    let borrow_req = Request::builder()
+        .method("POST").uri(format!("/books/{}/borrow", book.id))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"borrower_name":"Alice"}"#))
+        .unwrap();
+    let (borrow_status, _) = send(make_app(pool.clone()), borrow_req).await;
+    assert_eq!(borrow_status, StatusCode::CREATED);
+
+    // Book should now be unavailable
+    let get_req = Request::builder()
+        .uri(format!("/books/{}", book.id))
+        .body(Body::empty()).unwrap();
+    let (_, get_body) = send(make_app(pool.clone()), get_req).await;
+    let borrowed_book: Book = serde_json::from_slice(&get_body).unwrap();
+    assert!(!borrowed_book.available);
+
+    // Return it
+    let return_req = Request::builder()
+        .method("POST").uri(format!("/books/{}/return", book.id))
+        .body(Body::empty()).unwrap();
+    let (return_status, _) = send(make_app(pool.clone()), return_req).await;
+    assert_eq!(return_status, StatusCode::OK);
+
+    // Book should be available again
+    let get_req2 = Request::builder()
+        .uri(format!("/books/{}", book.id))
+        .body(Body::empty()).unwrap();
+    let (_, get_body2) = send(make_app(pool.clone()), get_req2).await;
+    let returned_book: Book = serde_json::from_slice(&get_body2).unwrap();
+    assert!(returned_book.available);
 }

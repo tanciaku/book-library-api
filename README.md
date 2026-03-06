@@ -7,6 +7,8 @@ A simple REST API for managing a personal book library, built with Rust and Axum
 - CRUD operations for books
 - SQLite persistence via sqlx
 - Track book availability
+- Borrow and return books with configurable loan periods
+- List overdue borrowings
 
 ## Quick Start
 
@@ -40,6 +42,12 @@ The server will start on `http://localhost:3000`
 - `GET /books/{id}` - Get a book by ID
 - `PUT /books/{id}` - Update a book
 - `DELETE /books/{id}` - Delete a book
+
+### Borrowings
+
+- `POST /books/{id}/borrow` - Borrow a book
+- `POST /books/{id}/return` - Return a borrowed book
+- `GET /borrowings/overdue` - List all overdue borrowings
 
 ### Example Requests
 
@@ -111,6 +119,44 @@ curl -X PUT http://localhost:3000/books/1 \
 curl -X DELETE http://localhost:3000/books/1
 ```
 
+**Borrow a book:**
+```bash
+curl -X POST http://localhost:3000/books/1/borrow \
+  -H "Content-Type: application/json" \
+  -d '{"borrower_name": "Alice", "days": 7}'
+```
+
+> `days` is optional and defaults to `14`.
+
+Returns `201 Created` with the borrowing record, or `404` if the book doesn't exist, or `409 Conflict` if the book is already borrowed.
+
+**Return a book:**
+```bash
+curl -X POST http://localhost:3000/books/1/return
+```
+
+Returns `200 OK`, or `400 Bad Request` if the book is not currently borrowed.
+
+**List overdue borrowings:**
+```bash
+curl http://localhost:3000/borrowings/overdue
+```
+
+Returns all borrowings whose `due_date` has passed and that have not yet been returned:
+```json
+[
+  {
+    "borrowing_id": 3,
+    "book_id": 1,
+    "book_title": "Clean Code",
+    "book_author": "Robert C. Martin",
+    "borrower_name": "Alice",
+    "borrowed_at": "2024-01-01T00:00:00+00:00",
+    "due_date": "2024-01-15T00:00:00+00:00"
+  }
+]
+```
+
 ## Data Model
 
 ```json
@@ -145,10 +191,14 @@ Test coverage includes:
 - Filtering by author (case-insensitive), year, and availability
 - Pagination correctness, limit capping, and out-of-bounds pages
 - End-to-end integration flows (create → update → get, create → delete → 404, etc.)
+- Borrow/return lifecycle (201 on borrow, 409 on double-borrow, 200 on return, 400 on bad return)
+- Overdue list filtering (excludes returned and future-due borrowings)
+- End-to-end borrow → return flow verifying `available` flag transitions
 
 ## Notes
 
 - Data is persisted in `books.db` (SQLite). The file is created automatically on first run.
+- SQLite foreign key enforcement is enabled on all connections.
 - Tests use an isolated in-memory SQLite database and run migrations automatically.
 
 ## License

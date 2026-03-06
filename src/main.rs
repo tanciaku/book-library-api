@@ -1,7 +1,9 @@
-use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, routing::{get, post}};
 use serde::{Deserialize, Serialize};
 use chrono::Datelike;
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnectOptions;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Book {
@@ -57,6 +59,8 @@ enum AppError {
     Database(sqlx::Error),
     NotFound(i64),
     BadRequest,
+    BookUnavailable(i64),
+    NotBorrowed(i64),
 }
 
 impl IntoResponse for AppError {
@@ -77,6 +81,16 @@ impl IntoResponse for AppError {
                 "Invalid book data. Check title, author, year, and ISBN format.".to_string()
             )
                 .into_response(),
+            AppError::BookUnavailable(id) => (
+                StatusCode::CONFLICT,
+                format!("Book with ID {} is already borrowed", id)
+            )
+                .into_response(),
+            AppError::NotBorrowed(id) => (
+                StatusCode::BAD_REQUEST,
+                format!("Book with ID {} is not borrowed", id)
+            )
+                .into_response(),
         }
     }
 }
@@ -87,19 +101,51 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Borrowing {
+    id: i64,
+    book_id: i64,
+    borrower_name: String,
+    borrowed_at: String,
+    due_date: String,
+    returned_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BorrowBook {
+    borrower_name: String,
+    days: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OverdueBorrowing {
+    borrowing_id: i64,
+    book_id: i64,
+    book_title: String,
+    book_author: String,
+    borrower_name: String,
+    borrowed_at: String,
+    due_date: String,
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    let pool = SqlitePool::connect(&db_url)
-        .await
-        .unwrap();
+    let connect_options = SqliteConnectOptions::from_str(&db_url)
+        .unwrap()
+        .foreign_keys(true);
+
+    let pool = SqlitePool::connect_with(connect_options).await.unwrap();
 
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/books", get(list_books).post(add_book))
         .route("/books/{id}", get(get_book).put(update_book).delete(delete_book))
+        .route("/books/{id}/borrow", post(borrow_book))
+        .route("/books/{id}/return", post(return_book))
+        .route("/borrowings/overdue", get(list_overdue))
         .with_state(pool);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -321,6 +367,114 @@ async fn delete_book(
     } else {
         Ok(StatusCode::NO_CONTENT)
     }
+}
+
+async fn borrow_book(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<i64>,
+    Json(input): Json<BorrowBook>,
+) -> Result<(StatusCode, Json<Borrowing>), AppError> {
+    let book = sqlx::query!("SELECT id, available FROM books WHERE id = ?", id)
+        .fetch_optional(&pool)
+        .await?;
+
+    let book = match book {
+        Some(b) => b,
+        None => return Err(AppError::NotFound(id)),
+    };
+
+    if book.available == 0 {
+        return Err(AppError::BookUnavailable(id));
+    }
+
+    let days = input.days.unwrap_or(14);
+    let now = chrono::Utc::now();
+    let borrowed_at = now.to_rfc3339();
+    let due_date = (now + chrono::Duration::days(days)).to_rfc3339();
+
+    let result = sqlx::query!(
+        "INSERT INTO borrowings (book_id, borrower_name, borrowed_at, due_date) VALUES (?, ?, ?, ?)",
+        id,
+        input.borrower_name,
+        borrowed_at,
+        due_date,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query!("UPDATE books SET available = false WHERE id = ?", id)
+        .execute(&pool)
+        .await?;
+
+    Ok((StatusCode::CREATED, Json(Borrowing {
+        id: result.last_insert_rowid(),
+        book_id: id,
+        borrower_name: input.borrower_name,
+        borrowed_at,
+        due_date,
+        returned_at: None,
+    })))
+}
+
+async fn return_book(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppError> {
+    let borrowing = sqlx::query!(
+        "SELECT id FROM borrowings WHERE book_id = ? AND returned_at IS NULL",
+        id
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    if borrowing.is_none() {
+        return Err(AppError::NotBorrowed(id));
+    }
+
+    let returned_at = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query!(
+        "UPDATE borrowings SET returned_at = ? WHERE book_id = ? AND returned_at IS NULL",
+        returned_at,
+        id
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query!("UPDATE books SET available = true WHERE id = ?", id)
+        .execute(&pool)
+        .await?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn list_overdue(
+    State(pool): State<SqlitePool>,
+) -> Result<Json<Vec<OverdueBorrowing>>, AppError> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let rows = sqlx::query!(
+        "SELECT b.id as borrowing_id, b.book_id, bk.title as book_title,
+                bk.author as book_author, b.borrower_name, b.borrowed_at, b.due_date
+         FROM borrowings b
+         JOIN books bk ON b.book_id = bk.id
+         WHERE b.due_date < ? AND b.returned_at IS NULL",
+         now
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    let overdue = rows.into_iter().map(|r| OverdueBorrowing {
+        borrowing_id: r.borrowing_id,
+        book_id: r.book_id,
+        book_title: r.book_title,
+        book_author: r.book_author,
+        borrower_name: r.borrower_name,
+        borrowed_at: r.borrowed_at,
+        due_date: r.due_date,
+    }).collect();
+
+    Ok(Json(overdue))
 }
 
 #[cfg(test)]
