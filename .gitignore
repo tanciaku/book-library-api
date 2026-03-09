@@ -1,8 +1,6 @@
 /target
 /coverage
-/book-library-api.txt
 /cmds.txt
-/td.txt
 /books.db
 /books.db-shm
 /books.db-wal

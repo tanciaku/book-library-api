@@ -5,17 +5,19 @@ A simple REST API for managing a personal book library, built with Rust and Axum
 ## Features
 
 - CRUD operations for books
-- SQLite persistence via sqlx
+- PostgreSQL persistence via sqlx
 - Track book availability
 - Borrow and return books with configurable loan periods
 - List overdue borrowings
 
 ## Quick Start
 
-1. Create a `.env` file (or export the variable) with your database URL:
+1. Create a `.env` file (or export the variables) with your database URLs:
 
 ```bash
-echo "DATABASE_URL=sqlite:books.db" > .env
+echo "DATABASE_URL=postgres://user:password@localhost/book_library" > .env
+# For running tests, also set:
+echo "TEST_DATABASE_URL=postgres://user:password@localhost/book_library_test" >> .env
 ```
 
 2. Run database migrations:
@@ -197,9 +199,8 @@ Test coverage includes:
 
 ## Notes
 
-- Data is persisted in `books.db` (SQLite). The file is created automatically on first run.
-- SQLite foreign key enforcement is enabled on all connections.
-- Tests use an isolated in-memory SQLite database and run migrations automatically.
+- Data is persisted in a PostgreSQL database specified by `DATABASE_URL`.
+- Tests connect to a real PostgreSQL instance via `TEST_DATABASE_URL` and reset state between runs using `TRUNCATE ... RESTART IDENTITY CASCADE`.
 
 ## License
 

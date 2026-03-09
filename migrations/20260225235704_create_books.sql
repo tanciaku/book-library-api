@@ -1,8 +1,8 @@
 CREATE TABLE books (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    title     TEXT    NOT NULL,
-    author    TEXT    NOT NULL,
-    year      INTEGER NOT NULL DEFAULT 0,
-    isbn      TEXT    NOT NULL,
-    available INTEGER NOT NULL DEFAULT 0
+    id        BIGSERIAL PRIMARY KEY,
+    title     TEXT      NOT NULL,
+    author    TEXT      NOT NULL,
+    year      BIGINT    NOT NULL,
+    isbn      TEXT      NOT NULL,
+    available BOOLEAN   NOT NULL
 );

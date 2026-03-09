@@ -2,19 +2,20 @@ use super::*;
 
 use axum::body::Body;
 use http_body_util::BodyExt;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::str::FromStr;
 use tower::ServiceExt;
 use axum::http::{self, Request};
+use sqlx::{PgPool, postgres::PgPoolOptions};
+use chrono::{DateTime, Utc};
 
-async fn test_pool() -> SqlitePool {
-    let connect_options = SqliteConnectOptions::from_str("sqlite::memory:")
-        .unwrap()
-        .foreign_keys(true);
+async fn test_pool() -> PgPool {
+    dotenvy::dotenv().ok();
 
-    let pool = SqlitePoolOptions::new()
+    let db_url = std::env::var("TEST_DATABASE_URL")
+        .expect("TEST_DATABASE_URL must be set");
+
+    let pool = PgPoolOptions::new()
         .max_connections(1)
-        .connect_with(connect_options)
+        .connect(&db_url)
         .await
         .unwrap();
 
@@ -23,10 +24,15 @@ async fn test_pool() -> SqlitePool {
         .await
         .unwrap();
 
+    sqlx::query!("TRUNCATE TABLE borrowings, books RESTART IDENTITY CASCADE")
+        .execute(&pool)
+        .await
+        .unwrap();
+
     pool
 }
 
-fn make_app(pool: SqlitePool) -> Router {
+fn make_app(pool: PgPool) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/books", get(list_books).post(add_book))
@@ -41,7 +47,7 @@ async fn app_with_books(books: Vec<Book>) -> Router {
     let pool = test_pool().await;
     for book in &books {
         sqlx::query!(
-            "INSERT INTO books (id, title, author, year, isbn, available) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO books (id, title, author, year, isbn, available) VALUES ($1, $2, $3, $4, $5, $6)",
             book.id,
             book.title,
             book.author,
@@ -58,10 +64,11 @@ async fn app_with_books(books: Vec<Book>) -> Router {
 
 /// Seeds one book and one borrowing row, returns the pool so the caller can
 /// build the app and add further rows if needed.
-async fn pool_with_borrowing(book: Book, borrowing: Borrowing) -> SqlitePool {
+async fn pool_with_borrowing(book: Book, borrowing: Borrowing) -> PgPool {
     let pool = test_pool().await;
+
     sqlx::query!(
-        "INSERT INTO books (id, title, author, year, isbn, available) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO books (id, title, author, year, isbn, available) VALUES ($1, $2, $3, $4, $5, $6)",
         book.id,
         book.title,
         book.author,
@@ -72,9 +79,10 @@ async fn pool_with_borrowing(book: Book, borrowing: Borrowing) -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+
     sqlx::query!(
         "INSERT INTO borrowings (id, book_id, borrower_name, borrowed_at, due_date, returned_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6)",
         borrowing.id,
         borrowing.book_id,
         borrowing.borrower_name,
@@ -85,6 +93,7 @@ async fn pool_with_borrowing(book: Book, borrowing: Borrowing) -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+
     pool
 }
 
@@ -93,8 +102,8 @@ fn sample_borrowing(id: i64, book_id: i64) -> Borrowing {
         id,
         book_id,
         borrower_name: "Alice".to_string(),
-        borrowed_at: "2024-01-01T00:00:00+00:00".to_string(),
-        due_date: "2024-01-15T00:00:00+00:00".to_string(), // overdue, unless returned_at manually set
+        borrowed_at: "2024-01-01T00:00:00+00:00".parse::<DateTime<Utc>>().unwrap(),
+        due_date:    "2024-01-15T00:00:00+00:00".parse::<DateTime<Utc>>().unwrap(), // overdue, unless returned_at manually set
         returned_at: None,
     }
 }
@@ -824,7 +833,7 @@ async fn list_overdue_excludes_returned_borrowings() {
     let mut book = sample_book(1);
     book.available = false;
     let mut borrowing = sample_borrowing(1, 1);
-    borrowing.returned_at = Some("2024-01-10T00:00:00+00:00".to_string());
+    borrowing.returned_at = Some("2024-01-10T00:00:00+00:00".parse::<DateTime<Utc>>().unwrap());
     let pool = pool_with_borrowing(book, borrowing).await;
     let req = Request::builder()
         .uri("/borrowings/overdue")
@@ -841,7 +850,7 @@ async fn list_overdue_excludes_future_due_dates() {
     let mut book = sample_book(1);
     book.available = false;
     let mut borrowing = sample_borrowing(1, 1);
-    borrowing.due_date = "2099-01-01T00:00:00+00:00".to_string();
+    borrowing.due_date = "2099-01-01T00:00:00+00:00".parse::<DateTime<Utc>>().unwrap();
     let pool = pool_with_borrowing(book, borrowing).await;
     let req = Request::builder()
         .uri("/borrowings/overdue")

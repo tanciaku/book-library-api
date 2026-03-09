@@ -1,9 +1,7 @@
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, routing::{get, post}};
 use serde::{Deserialize, Serialize};
-use chrono::Datelike;
-use sqlx::SqlitePool;
-use sqlx::sqlite::SqliteConnectOptions;
-use std::str::FromStr;
+use chrono::{Datelike, DateTime, Utc};
+use sqlx::PgPool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Book {
@@ -106,9 +104,9 @@ struct Borrowing {
     id: i64,
     book_id: i64,
     borrower_name: String,
-    borrowed_at: String,
-    due_date: String,
-    returned_at: Option<String>,
+    borrowed_at: DateTime<Utc>,
+    due_date: DateTime<Utc>,
+    returned_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,8 +122,8 @@ struct OverdueBorrowing {
     book_title: String,
     book_author: String,
     borrower_name: String,
-    borrowed_at: String,
-    due_date: String,
+    borrowed_at: DateTime<Utc>,
+    due_date: DateTime<Utc>,
 }
 
 #[tokio::main]
@@ -133,11 +131,9 @@ async fn main() {
     dotenvy::dotenv().ok();
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    let connect_options = SqliteConnectOptions::from_str(&db_url)
-        .unwrap()
-        .foreign_keys(true);
+    let pool = PgPool::connect(&db_url).await.unwrap();
 
-    let pool = SqlitePool::connect_with(connect_options).await.unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -162,7 +158,7 @@ async fn health_check() -> &'static str {
 }
 
 async fn list_books(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Query(params): Query<BookParams>
 ) -> Result<Json<PaginatedResponse<Book>>, AppError> {
     let page = params.page.unwrap_or(1).max(1);
@@ -172,20 +168,17 @@ async fn list_books(
     // (total_rows)
     let total_items = sqlx::query!(
         "SELECT COUNT(*) as count FROM books
-         WHERE (? IS NULL OR available = ?)
-         AND (? IS NULL OR LOWER(author) LIKE '%' || LOWER(?) || '%')
-         AND (? IS NULL OR year = ?)",
-        params.available,
+         WHERE ($1::boolean IS NULL OR available = $1)
+         AND ($2::text IS NULL OR LOWER(author) LIKE '%' || LOWER($2) || '%')
+         AND ($3::bigint IS NULL OR year = $3)",
         params.available,
         params.author,
-        params.author,
-        params.year,
         params.year,
     )
     .fetch_one(&pool)
     .await?
     .count
-    as usize;
+    .unwrap_or(0) as usize;
 
     let total_pages = (total_items + limit - 1) / limit;
 
@@ -194,15 +187,12 @@ async fn list_books(
 
     let rows = sqlx::query!(
         "SELECT * FROM books
-         WHERE (? IS NULL OR available = ?)
-         AND (? IS NULL OR LOWER(author) LIKE '%' || LOWER(?) || '%')
-         AND (? IS NULL OR year = ?)
-         LIMIT ? OFFSET ?",
-        params.available,
+         WHERE ($1::boolean IS NULL OR available = $1)
+         AND ($2::text IS NULL OR LOWER(author) LIKE '%' || LOWER($2) || '%')
+         AND ($3::bigint IS NULL OR year = $3)
+         LIMIT $4 OFFSET $5",
         params.available,
         params.author,
-        params.author,
-        params.year,
         params.year,
         limit_i64,
         offset_i64,
@@ -216,7 +206,7 @@ async fn list_books(
         author: r.author,
         year: r.year,
         isbn: r.isbn,
-        available: r.available != 0,
+        available: r.available,
     }).collect();
 
     Ok(Json(PaginatedResponse {
@@ -231,26 +221,26 @@ async fn list_books(
 }
 
 async fn add_book(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Json(input): Json<AddBook>
 ) -> Result<(StatusCode, Json<Book>), AppError> {
     if !validate_book(&input) {
         return Err(AppError::BadRequest)
     }
     
-    let result = sqlx::query!(
-        "INSERT INTO books (title, author, year, isbn, available) VALUES (?, ?, ?, ?, ?)",
+    let row = sqlx::query!(
+        "INSERT INTO books (title, author, year, isbn, available) VALUES ($1, $2, $3, $4, $5) RETURNING id",
         input.title,
         input.author,
         input.year,
         input.isbn,
         true,
     )
-    .execute(&pool)
+    .fetch_one(&pool)
     .await?;
 
     let book = Book {
-        id: result.last_insert_rowid(),
+        id: row.id,
         title: input.title,
         author: input.author,
         year: input.year,
@@ -279,11 +269,11 @@ fn is_valid_isbn(isbn: &str) -> bool {
 }
 
 async fn get_book(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(id): Path<i64>
 ) -> Result<(StatusCode, Json<Book>), AppError> {
     let row = sqlx::query!(
-        "SELECT id, title, author, year, isbn, available FROM books WHERE id = ?",
+        "SELECT id, title, author, year, isbn, available FROM books WHERE id = $1",
         id
     )
     .fetch_optional(&pool)
@@ -298,25 +288,25 @@ async fn get_book(
                 author: r.author,
                 year: r.year,
                 isbn: r.isbn,
-                available: r.available != 0,
+                available: r.available,
             }))),
         None => Err(AppError::NotFound(id)),
     }
 }
 
 async fn update_book(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(id): Path<i64>,
     Json(input): Json<UpdateBook>
 ) -> Result<(StatusCode, Json<Book>), AppError> {
     let result = sqlx::query!(
         "UPDATE books
-         SET title     = COALESCE(?, title),
-             author    = COALESCE(?, author),
-             year      = COALESCE(?, year),
-             isbn      = COALESCE(?, isbn),
-             available = COALESCE(?, available)
-         WHERE id = ?",
+         SET title     = COALESCE($1, title),
+             author    = COALESCE($2, author),
+             year      = COALESCE($3, year),
+             isbn      = COALESCE($4, isbn),
+             available = COALESCE($5, available)
+         WHERE id = $6",
         input.title,
         input.author,
         input.year,
@@ -332,7 +322,7 @@ async fn update_book(
     }
 
     let row = sqlx::query!(
-        "SELECT id, title, author, year, isbn, available FROM books WHERE id = ?",
+        "SELECT id, title, author, year, isbn, available FROM books WHERE id = $1",
         id
     )
     .fetch_one(&pool)
@@ -346,17 +336,17 @@ async fn update_book(
             author: row.author,
             year: row.year,
             isbn: row.isbn,
-            available: row.available != 0,
+            available: row.available,
         })
     ))
 }
 
 async fn delete_book(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
     let result = sqlx::query!(
-        "DELETE FROM books WHERE id = ?",
+        "DELETE FROM books WHERE id = $1",
         id
     )
     .execute(&pool)
@@ -370,44 +360,50 @@ async fn delete_book(
 }
 
 async fn borrow_book(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(id): Path<i64>,
     Json(input): Json<BorrowBook>,
 ) -> Result<(StatusCode, Json<Borrowing>), AppError> {
-    let book = sqlx::query!("SELECT id, available FROM books WHERE id = ?", id)
-        .fetch_optional(&pool)
-        .await?;
+    let book = sqlx::query!(
+        "SELECT id, available FROM books WHERE id = $1",
+        id
+    )
+    .fetch_optional(&pool)
+    .await?;
 
     let book = match book {
         Some(b) => b,
         None => return Err(AppError::NotFound(id)),
     };
 
-    if book.available == 0 {
+    if !book.available {
         return Err(AppError::BookUnavailable(id));
     }
 
     let days = input.days.unwrap_or(14);
     let now = chrono::Utc::now();
-    let borrowed_at = now.to_rfc3339();
-    let due_date = (now + chrono::Duration::days(days)).to_rfc3339();
+    let borrowed_at: DateTime<Utc> = now;
+    let due_date: DateTime<Utc> = now + chrono::Duration::days(days);
 
-    let result = sqlx::query!(
-        "INSERT INTO borrowings (book_id, borrower_name, borrowed_at, due_date) VALUES (?, ?, ?, ?)",
+    let row = sqlx::query!(
+        "INSERT INTO borrowings (book_id, borrower_name, borrowed_at, due_date) VALUES ($1, $2, $3, $4) RETURNING id",
         id,
         input.borrower_name,
         borrowed_at,
         due_date,
     )
+    .fetch_one(&pool)
+    .await?;
+
+    sqlx::query!(
+        "UPDATE books SET available = false WHERE id = $1",
+        id
+    )
     .execute(&pool)
     .await?;
 
-    sqlx::query!("UPDATE books SET available = false WHERE id = ?", id)
-        .execute(&pool)
-        .await?;
-
     Ok((StatusCode::CREATED, Json(Borrowing {
-        id: result.last_insert_rowid(),
+        id: row.id,
         book_id: id,
         borrower_name: input.borrower_name,
         borrowed_at,
@@ -417,11 +413,11 @@ async fn borrow_book(
 }
 
 async fn return_book(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
     let borrowing = sqlx::query!(
-        "SELECT id FROM borrowings WHERE book_id = ? AND returned_at IS NULL",
+        "SELECT id FROM borrowings WHERE book_id = $1 AND returned_at IS NULL",
         id
     )
     .fetch_optional(&pool)
@@ -431,34 +427,37 @@ async fn return_book(
         return Err(AppError::NotBorrowed(id));
     }
 
-    let returned_at = chrono::Utc::now().to_rfc3339();
+    let returned_at: DateTime<Utc> = chrono::Utc::now();
 
     sqlx::query!(
-        "UPDATE borrowings SET returned_at = ? WHERE book_id = ? AND returned_at IS NULL",
+        "UPDATE borrowings SET returned_at = $1 WHERE book_id = $2 AND returned_at IS NULL",
         returned_at,
         id
     )
     .execute(&pool)
     .await?;
 
-    sqlx::query!("UPDATE books SET available = true WHERE id = ?", id)
-        .execute(&pool)
-        .await?;
+    sqlx::query!(
+        "UPDATE books SET available = true WHERE id = $1",
+        id
+    )
+    .execute(&pool)
+    .await?;
 
     Ok(StatusCode::OK)
 }
 
 async fn list_overdue(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
 ) -> Result<Json<Vec<OverdueBorrowing>>, AppError> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now: DateTime<Utc> = chrono::Utc::now();
 
     let rows = sqlx::query!(
         "SELECT b.id as borrowing_id, b.book_id, bk.title as book_title,
                 bk.author as book_author, b.borrower_name, b.borrowed_at, b.due_date
          FROM borrowings b
          JOIN books bk ON b.book_id = bk.id
-         WHERE b.due_date < ? AND b.returned_at IS NULL",
+         WHERE b.due_date < $1 AND b.returned_at IS NULL",
          now
     )
     .fetch_all(&pool)
